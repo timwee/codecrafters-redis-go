@@ -85,18 +85,6 @@ func main() {
 func (s *Server) HandleConnection(conn *Conn) {
 	defer conn.base.Close()
 	for {
-		// var buf bytes.Buffer
-		// tmp := make([]byte, 1024)
-		// n, err := conn.Read(tmp)
-		// if err != nil {
-		// 	if err != io.EOF {
-		// 		fmt.Println(err)
-		// 		return
-		// 	}
-		// }
-		// buf.Write(tmp[:n])
-
-		// respond(buf, conn)
 
 		v, _, _, err := conn.ReadMultiBulk()
 		if err != nil {
@@ -148,27 +136,3 @@ func (s *Server) HandleConnection(conn *Conn) {
 	}
 
 }
-
-// func respond(buf bytes.Buffer, conn net.Conn) {
-// 	toks := strings.Split(buf.String(), SEP)
-// 	if isPing(toks) {
-// 		conn.Write([]byte(PONG))
-// 	} else if isEcho(toks) {
-// 		fmt.Printf("in echo, echoing back %s", toks[4])
-// 		_, err := fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(toks[4]), toks[4])
-// 		if err != nil {
-// 			fmt.Println(err)
-// 			return
-// 		}
-// 	} else {
-// 		// fmt.Printf("unsupported command: %s", buf.String())
-// 	}
-// }
-
-// func isEcho(toks []string) bool {
-// 	return len(toks) >= 5 && strings.Compare(toks[2], "echo") == 0
-// }
-
-// func isPing(toks []string) bool {
-// 	return len(toks) >= 3 && strings.Compare(toks[2], "ping") == 0
-// }
