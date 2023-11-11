@@ -1,12 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"strings"
+
+	"github.com/timwee/redis/resp"
 	// "os"
 )
 
@@ -16,6 +16,24 @@ const (
 	SEP         = "\r\n"
 	PONG        = "+PONG\r\n"
 )
+
+// Conn represents a RESP network connection.
+type Conn struct {
+	*resp.Reader
+	*resp.Writer
+	base       net.Conn
+	RemoteAddr string
+}
+
+// NewConn returns a Conn.
+func NewConn(conn net.Conn) *Conn {
+	return &Conn{
+		Reader:     resp.NewReader(conn),
+		Writer:     resp.NewWriter(conn),
+		base:       conn,
+		RemoteAddr: conn.RemoteAddr().String(),
+	}
+}
 
 func main() {
 	l, err := net.Listen("tcp", "0.0.0.0:6379")
@@ -29,49 +47,77 @@ func main() {
 			fmt.Println("Error accepting connection: ", err.Error())
 			os.Exit(1)
 		}
-		go handleConnection(conn)
+		go handleConnection(NewConn(conn))
 	}
 }
 
-func handleConnection(conn net.Conn) {
-	defer conn.Close()
+func handleConnection(conn *Conn) {
+	defer conn.base.Close()
 	for {
-		var buf bytes.Buffer
-		tmp := make([]byte, 1024)
-		n, err := conn.Read(tmp)
-		if err != nil {
-			if err != io.EOF {
-				fmt.Println(err)
-				return
-			}
-		}
-		buf.Write(tmp[:n])
+		// var buf bytes.Buffer
+		// tmp := make([]byte, 1024)
+		// n, err := conn.Read(tmp)
+		// if err != nil {
+		// 	if err != io.EOF {
+		// 		fmt.Println(err)
+		// 		return
+		// 	}
+		// }
+		// buf.Write(tmp[:n])
 
-		respond(buf, conn)
-	}
+		// respond(buf, conn)
 
-}
-
-func respond(buf bytes.Buffer, conn net.Conn) {
-	toks := strings.Split(buf.String(), SEP)
-	if isPing(toks) {
-		conn.Write([]byte(PONG))
-	} else if isEcho(toks) {
-		fmt.Printf("in echo, echoing back %s", toks[4])
-		_, err := fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(toks[4]), toks[4])
+		v, _, _, err := conn.ReadMultiBulk()
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-	} else {
-		// fmt.Printf("unsupported command: %s", buf.String())
+		values := v.Array()
+		if len(values) == 0 {
+			continue
+		}
+		lccommandName := values[0].String()
+		commandName := strings.ToUpper(lccommandName)
+		fmt.Println(commandName)
+		switch commandName {
+		case "QUIT":
+			conn.WriteSimpleString("OK")
+			return
+		case "PING":
+			if err := conn.WriteSimpleString("PONG"); err != nil {
+				fmt.Println(err)
+			}
+			continue
+		case "ECHO":
+			if err := conn.WriteString(values[1].String()); err != nil {
+				fmt.Println(err)
+			}
+			continue
+		}
 	}
+
 }
 
-func isEcho(toks []string) bool {
-	return len(toks) >= 5 && strings.Compare(toks[2], "echo") == 0
-}
+// func respond(buf bytes.Buffer, conn net.Conn) {
+// 	toks := strings.Split(buf.String(), SEP)
+// 	if isPing(toks) {
+// 		conn.Write([]byte(PONG))
+// 	} else if isEcho(toks) {
+// 		fmt.Printf("in echo, echoing back %s", toks[4])
+// 		_, err := fmt.Fprintf(conn, "$%d\r\n%s\r\n", len(toks[4]), toks[4])
+// 		if err != nil {
+// 			fmt.Println(err)
+// 			return
+// 		}
+// 	} else {
+// 		// fmt.Printf("unsupported command: %s", buf.String())
+// 	}
+// }
 
-func isPing(toks []string) bool {
-	return len(toks) >= 3 && strings.Compare(toks[2], "ping") == 0
-}
+// func isEcho(toks []string) bool {
+// 	return len(toks) >= 5 && strings.Compare(toks[2], "echo") == 0
+// }
+
+// func isPing(toks []string) bool {
+// 	return len(toks) >= 3 && strings.Compare(toks[2], "ping") == 0
+// }
