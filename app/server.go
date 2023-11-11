@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/timwee/redis/resp"
 	// "os"
@@ -16,6 +17,35 @@ const (
 	SEP         = "\r\n"
 	PONG        = "+PONG\r\n"
 )
+
+type Server struct {
+	store map[string]*resp.Value
+	mu    sync.RWMutex
+}
+
+// NewServer returns a new Server.
+func NewServer() *Server {
+	return &Server{
+		store: make(map[string]*resp.Value),
+	}
+}
+
+func (s *Server) Set(k string, v *resp.Value) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.store[k] = v
+}
+
+func (s *Server) Get(k string) *resp.Value {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if v, ok := s.store[k]; ok {
+		return v
+	}
+	return nil
+}
 
 // Conn represents a RESP network connection.
 type Conn struct {
@@ -37,6 +67,7 @@ func NewConn(conn net.Conn) *Conn {
 
 func main() {
 	l, err := net.Listen("tcp", "0.0.0.0:6379")
+	s := NewServer()
 	if err != nil {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
@@ -47,11 +78,11 @@ func main() {
 			fmt.Println("Error accepting connection: ", err.Error())
 			os.Exit(1)
 		}
-		go handleConnection(NewConn(conn))
+		go s.HandleConnection(NewConn(conn))
 	}
 }
 
-func handleConnection(conn *Conn) {
+func (s *Server) HandleConnection(conn *Conn) {
 	defer conn.base.Close()
 	for {
 		// var buf bytes.Buffer
@@ -91,6 +122,26 @@ func handleConnection(conn *Conn) {
 		case "ECHO":
 			if err := conn.WriteString(values[1].String()); err != nil {
 				fmt.Println(err)
+			}
+			continue
+		case "SET":
+			if len(values) != 3 {
+				fmt.Println(fmt.Errorf("expecting three params for SET, instead got %v", v.String()))
+				continue
+			}
+			fmt.Printf("writing into map for key %s: %s\n", values[1].String(), values[2].String())
+			s.Set(values[1].String(), &values[2])
+			conn.WriteSimpleString("OK")
+			continue
+		case "GET":
+			if len(values) != 2 {
+				fmt.Println(fmt.Errorf("expecting 2 params for GET, instead got %v", v.String()))
+				continue
+			}
+			fmt.Printf("retrieving from map for key %s\n", values[1].String())
+			if v, ok := s.store[values[1].String()]; ok {
+				fmt.Printf("Found in map for key %s, value: %s\n", values[1].String(), v.String())
+				conn.WriteBytes(v.Bytes())
 			}
 			continue
 		}
