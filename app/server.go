@@ -6,43 +6,60 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/timwee/redis/resp"
 	// "os"
 )
 
 const (
-	PING        = "*1\r\n$4\r\nping\r\n"
-	ECHO_PREFIX = "*2\r\n$4\r\nECHO\r\n$"
-	SEP         = "\r\n"
-	PONG        = "+PONG\r\n"
+	PING         = "*1\r\n$4\r\nping\r\n"
+	ECHO_PREFIX  = "*2\r\n$4\r\nECHO\r\n$"
+	SEP          = "\r\n"
+	PONG         = "+PONG\r\n"
+	MAX_DURATION = 1<<63 - 1
 )
 
+type ExpirableEntry struct {
+	Ttl       time.Duration
+	AddedTime time.Time
+	Val       *resp.Value
+}
+
 type Server struct {
-	store map[string]*resp.Value
-	mu    sync.RWMutex
+	expirableStore map[string]*ExpirableEntry
+	emu            sync.RWMutex
 }
 
 // NewServer returns a new Server.
 func NewServer() *Server {
 	return &Server{
-		store: make(map[string]*resp.Value),
+		expirableStore: make(map[string]*ExpirableEntry),
 	}
 }
 
-func (s *Server) Set(k string, v *resp.Value) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Server) ESet(k string, v *resp.Value, ttl time.Duration) {
+	s.emu.Lock()
+	defer s.emu.Unlock()
 
-	s.store[k] = v
+	s.expirableStore[k] = &ExpirableEntry{
+		Ttl:       ttl,
+		Val:       v,
+		AddedTime: time.Now(),
+	}
 }
 
-func (s *Server) Get(k string) *resp.Value {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Server) EGet(k string) *resp.Value {
+	s.emu.RLock()
+	defer s.emu.RUnlock()
 
-	if v, ok := s.store[k]; ok {
-		return v
+	if ev, ok := s.expirableStore[k]; ok {
+		past := time.Since(ev.AddedTime)
+		if past < ev.Ttl {
+			return ev.Val
+		}
+		delete(s.expirableStore, k)
+		return nil
 	}
 	return nil
 }
@@ -113,12 +130,18 @@ func (s *Server) HandleConnection(conn *Conn) {
 			}
 			continue
 		case "SET":
-			if len(values) != 3 {
-				fmt.Println(fmt.Errorf("expecting three params for SET, instead got %v", v.String()))
+			if len(values) != 3 && len(values) != 5 {
+				fmt.Println(fmt.Errorf("expecting three or 5 params for SET, instead got %v", v.String()))
 				continue
 			}
-			fmt.Printf("writing into map for key %s: %s\n", values[1].String(), values[2].String())
-			s.Set(values[1].String(), &values[2])
+			k := values[1].String()
+			val := &values[2]
+			fmt.Printf("writing into map for key %s: %s\n", k, val.String())
+			var ttl time.Duration = MAX_DURATION
+			if len(values) == 5 && strings.ToUpper(values[3].String()) == "PX" {
+				ttl = time.Duration(values[4].Integer()) * time.Millisecond
+			}
+			s.ESet(values[1].String(), &values[2], ttl)
 			conn.WriteSimpleString("OK")
 			continue
 		case "GET":
@@ -127,9 +150,11 @@ func (s *Server) HandleConnection(conn *Conn) {
 				continue
 			}
 			fmt.Printf("retrieving from map for key %s\n", values[1].String())
-			if v, ok := s.store[values[1].String()]; ok {
+			if v := s.EGet(values[1].String()); v != nil {
 				fmt.Printf("Found in map for key %s, value: %s\n", values[1].String(), v.String())
 				conn.WriteBytes(v.Bytes())
+			} else {
+				conn.WriteNull()
 			}
 			continue
 		}
