@@ -1,15 +1,22 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/timwee/redis/rdb"
 	"github.com/timwee/redis/resp"
-	// "os"
+)
+
+var (
+	dir    = flag.String("dir", "", "the dirname")
+	dbfile = flag.String("dbfilename", "", "the rdb file")
 )
 
 const (
@@ -21,20 +28,49 @@ const (
 )
 
 type ExpirableEntry struct {
-	Ttl       time.Duration
-	AddedTime time.Time
-	Val       *resp.Value
+	ExpiryTime time.Time
+	Val        *resp.Value
 }
 
 type Server struct {
 	expirableStore map[string]*ExpirableEntry
 	emu            sync.RWMutex
+	dir            string
+	dbFileName     string
 }
 
 // NewServer returns a new Server.
-func NewServer() *Server {
+func NewServer(dir, dbfile string) *Server {
+	serverStore := make(map[string]*ExpirableEntry)
+
+	// if we're given an RDB file, read it into serverStore
+	if dir != "" && dbfile != "" {
+		f, err := rdb.NewRDBFileFromPath(path.Join(dir, dbfile))
+		if err != nil {
+			fmt.Printf("server: load-rdb: exited with error: %s, skipped", err)
+		}
+		if err := f.Parse(); err != nil {
+			fmt.Printf("server: parse-rdb: exited with error: %s, skipped", err)
+		} else {
+			for k, vRDB := range f.GetDB() {
+				expiryTime := vRDB.Expires
+				if !vRDB.HasExpiry {
+					expiryTime = time.Now().Add(MAX_DURATION)
+				}
+				respVal := resp.StringValue(vRDB.Value)
+				expirableVal := ExpirableEntry{
+					Val:        &respVal,
+					ExpiryTime: expiryTime,
+				}
+				serverStore[k] = &expirableVal
+			}
+		}
+	}
+
 	return &Server{
-		expirableStore: make(map[string]*ExpirableEntry),
+		expirableStore: serverStore,
+		dir:            dir,
+		dbFileName:     dbfile,
 	}
 }
 
@@ -43,9 +79,8 @@ func (s *Server) ESet(k string, v *resp.Value, ttl time.Duration) {
 	defer s.emu.Unlock()
 
 	s.expirableStore[k] = &ExpirableEntry{
-		Ttl:       ttl,
-		Val:       v,
-		AddedTime: time.Now(),
+		ExpiryTime: time.Now().Add(ttl),
+		Val:        v,
 	}
 }
 
@@ -54,8 +89,7 @@ func (s *Server) EGet(k string) *resp.Value {
 	defer s.emu.RUnlock()
 
 	if ev, ok := s.expirableStore[k]; ok {
-		past := time.Since(ev.AddedTime)
-		if past < ev.Ttl {
+		if ev.ExpiryTime.After(time.Now()) {
 			return ev.Val
 		}
 		delete(s.expirableStore, k)
@@ -83,8 +117,10 @@ func NewConn(conn net.Conn) *Conn {
 }
 
 func main() {
+	flag.Parse()
+	s := NewServer(*dir, *dbfile)
 	l, err := net.Listen("tcp", "0.0.0.0:6379")
-	s := NewServer()
+
 	if err != nil {
 		fmt.Println("Failed to bind to port 6379")
 		os.Exit(1)
@@ -157,7 +193,33 @@ func (s *Server) HandleConnection(conn *Conn) {
 				conn.WriteNull()
 			}
 			continue
+		case "CONFIG":
+			if len(values) != 3 || strings.ToUpper(values[1].String()) != "GET" {
+				fmt.Println(fmt.Errorf("expecting 3 params for CONFIG, but got %v", v.String()))
+				continue
+			}
+			lConfigKey := values[2].String()
+			configKey := strings.ToLower(lConfigKey)
+			switch configKey {
+			case "dir":
+				conn.WriteArray([]resp.Value{
+					resp.StringValue(configKey),
+					resp.StringValue(s.dir),
+				})
+				continue
+			case "dbfilename":
+				conn.WriteArray([]resp.Value{
+					resp.StringValue(configKey),
+					resp.StringValue(s.dbFileName),
+				})
+				continue
+			default:
+				fmt.Println(fmt.Errorf("unexpected command %v", lConfigKey))
+				continue
+			}
+
 		}
+
 	}
 
 }
