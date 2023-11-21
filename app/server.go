@@ -62,6 +62,7 @@ func NewServer(dir, dbfile string) *Server {
 					Val:        &respVal,
 					ExpiryTime: expiryTime,
 				}
+				// fmt.Printf("Adding %v: %v\n", k, vRDB.Value)
 				serverStore[k] = &expirableVal
 			}
 		}
@@ -192,6 +193,24 @@ func (s *Server) HandleConnection(conn *Conn) {
 			} else {
 				conn.WriteNull()
 			}
+			continue
+		case "KEYS":
+			if len(values) != 2 || strings.ToUpper(values[1].String()) != "*" {
+				fmt.Println(fmt.Errorf("expecting 2 params for KEYS, but got %v", v.String()))
+				continue
+			}
+			if len(s.expirableStore) < 1 {
+				conn.WriteNull()
+				continue
+			}
+			var firstKey string
+			for k := range s.expirableStore {
+				firstKey = k
+				break
+			}
+			conn.WriteArray([]resp.Value{
+				resp.StringValue(firstKey),
+			})
 			continue
 		case "CONFIG":
 			if len(values) != 3 || strings.ToUpper(values[1].String()) != "GET" {
