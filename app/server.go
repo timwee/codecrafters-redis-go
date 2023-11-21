@@ -203,14 +203,13 @@ func (s *Server) HandleConnection(conn *Conn) {
 				conn.WriteNull()
 				continue
 			}
-			var firstKey string
+			encodedKeys := make([]resp.Value, len(s.expirableStore))
+			i := 0
 			for k := range s.expirableStore {
-				firstKey = k
-				break
+				encodedKeys[i] = resp.StringValue(k)
+				i += 1
 			}
-			conn.WriteArray([]resp.Value{
-				resp.StringValue(firstKey),
-			})
+			conn.WriteArray(encodedKeys)
 			continue
 		case "CONFIG":
 			if len(values) != 3 || strings.ToUpper(values[1].String()) != "GET" {
